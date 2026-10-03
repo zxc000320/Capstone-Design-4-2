@@ -9,7 +9,7 @@ LOG_FILE = LOG_DIR / "history.jsonl"
 
 def record_history(
     original_file,
-    backup_path,
+    output_path,
     detection_count,
     processing_type,
     status,
@@ -20,7 +20,7 @@ def record_history(
     history = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "original_filename": Path(original_file).name,
-        "backup_path": str(backup_path),
+        "output_path": str(output_path),
         "detection_count": detection_count,
         "processing_type": processing_type,
         "status": status,
