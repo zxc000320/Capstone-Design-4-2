@@ -20,7 +20,7 @@ def record_history(
     history = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "original_filename": Path(original_file).name,
-        "output_path": str(output_path),
+        "output_path": str(output_path) if output_path is not None else None,
         "detection_count": detection_count,
         "processing_type": processing_type,
         "status": status,

@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -70,6 +71,38 @@ class HistoryTest(unittest.TestCase):
         )
 
         self.assertEqual(get_history(), [first, second])
+
+    def test_check_only_history_without_output(self):
+        original = self.work_dir / "sample.txt"
+        original_bytes = b"sample input\n"
+        original.write_bytes(original_bytes)
+
+        history = record_history(original, None, 2, "check", "success")
+
+        self.assertIsNone(history["output_path"])
+        self.assertEqual(get_history(), [history])
+        self.assertEqual(history["processing_type"], "check")
+        self.assertEqual(history["status"], "success")
+        self.assertEqual(history["detection_count"], 2)
+        stored = json.loads(history_manager.LOG_FILE.read_text(encoding="utf-8"))
+        self.assertIsNone(stored["output_path"])
+        self.assertEqual(original.read_bytes(), original_bytes)
+        self.assertEqual(
+            {path.relative_to(self.work_dir).as_posix()
+             for path in self.work_dir.rglob("*") if path.is_file()},
+            {"sample.txt", "logs/history.jsonl"},
+        )
+
+    def test_failed_history_without_output(self):
+        history = record_history(
+            "sample.txt", None, 2, "masking", "failed",
+            error_message="처리본 경로 결정 실패",
+        )
+
+        self.assertEqual(get_history(), [history])
+        self.assertIsNone(history["output_path"])
+        self.assertEqual(history["status"], "failed")
+        self.assertEqual(history["error_message"], "처리본 경로 결정 실패")
 
     def test_record_preserves_original_and_output_files(self):
         original = self.work_dir / "원본.txt"
