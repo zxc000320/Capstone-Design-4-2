@@ -6,6 +6,7 @@
 
     regex_detector.detect_text(text) → [{"type", "value", "start", "end"}]   (박주아)
     masking.apply_masking(text, results) → str                              (최동명)
+    backup_history.history_manager.record_history(...)                      (김재민)
 
 파이프라인 공통 형식 (Entity):
     {"seg_id", "start", "end", "type", "text", "source"}
@@ -25,6 +26,7 @@ sys.dont_write_bytecode = True
 
 import regex_detector  # noqa: E402
 import masking  # noqa: E402
+from backup_history.history_manager import record_history, get_history, LOG_FILE  # noqa: E402
 
 # 모듈 타입 이름 → 파이프라인 타입 이름
 TYPE_FROM_MODULE = {
@@ -75,3 +77,31 @@ def apply_masking(segments, entities):
         text = masking.apply_masking(seg["text"], results) if results else seg["text"]
         new_segments.append({**seg, "text": text})
     return new_segments
+
+
+def save_history(input_path, output_path, detection_count, check_only, status, error=None):
+    """이력 기록: 김재민님 record_history()를 그 모듈의 README에 적힌 규칙대로 호출
+
+    - 처리 방식: 마스킹은 "masking", 점검만은 "check"
+    - 상태: "success" 또는 "failed"
+    - 오류 메시지에는 개인정보 원문을 넣지 않는다 (파이프라인 오류 메시지는 원문을 포함하지 않음)
+    이력은 실행 위치 기준 logs/history.jsonl에 쌓인다 (run.bat은 저장소 맨 위에서 실행)
+    """
+    return record_history(
+        original_file=input_path,
+        output_path=output_path,
+        detection_count=detection_count,
+        processing_type="check" if check_only else "masking",
+        status=status,
+        error_message=error,
+    )
+
+
+def load_history():
+    """이력 조회: 김재민님 get_history() 그대로 호출 (기록한 순서대로 반환)"""
+    return get_history()
+
+
+def history_file_path():
+    """이력 파일 위치 (실행 위치 기준 logs/history.jsonl)"""
+    return os.path.abspath(str(LOG_FILE))

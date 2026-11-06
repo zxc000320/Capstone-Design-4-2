@@ -19,6 +19,7 @@ from tkinter import ttk, filedialog, messagebox
 import tkinter.font as tkfont
 
 from pipeline import run_batch, collect_files, ModuleOutputError, DEFAULT_OUT
+import adapters
 from fileio.loader import is_supported
 from main import TYPE_NAMES, describe_counts
 
@@ -188,6 +189,7 @@ class App(ttk.Frame):
         self.progress.grid(row=0, column=1, sticky="ew", padx=8)
         self.open_btn = ttk.Button(run_row, text="결과 폴더 열기", command=self.open_output, state="disabled")
         self.open_btn.grid(row=0, column=2)
+        ttk.Button(run_row, text="이력 보기", command=self.show_history).grid(row=0, column=3, padx=(4, 0))
 
         ttk.Label(self, text="상세 (선택한 파일의 탐지 위치 — 원문 대신 가린 문장으로 표시)").grid(
             row=6, column=0, columnspan=3, sticky="w", pady=(4, 2))
@@ -409,7 +411,12 @@ class App(ttk.Frame):
         msg = f"{word} 완료: 파일 {len(results)}개, 개인정보 {sum(total.values())}건 ({describe_counts(total)})"
         if errors:
             msg += f" / 실패 {len(errors)}개"
+        if summary.get("history_errors"):
+            msg += f" / 이력 기록 실패 {len(summary['history_errors'])}건"
         self.status_var.set(msg)
+        # 이력 창이 열려 있으면 방금 기록까지 바로 반영
+        if HistoryWindow._instance is not None and HistoryWindow._instance.winfo_exists():
+            HistoryWindow._instance.refresh()
         if mode != "check" and results:
             self.open_btn.configure(state="normal")
         # 탐지 결과가 있는 첫 파일을 펼쳐 보여줌
@@ -451,14 +458,148 @@ class App(ttk.Frame):
         self.detail.insert("1.0", text)
         self.detail.configure(state="disabled")
 
+    def show_history(self):
+        HistoryWindow(self.root)
+
     def open_output(self):
-        path = os.path.abspath(self.out_var.get().strip() or DEFAULT_OUT)
-        if sys.platform.startswith("win"):
-            os.startfile(path)
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", path])
+        open_path(os.path.abspath(self.out_var.get().strip() or DEFAULT_OUT))
+
+
+# ---------------------------------------------------------------- 이력 보기 창
+PROCESS_NAMES = {"masking": "마스킹", "check": "점검만"}
+STATUS_NAMES = {"success": "성공", "failed": "실패"}
+
+
+def open_path(path):
+    if sys.platform.startswith("win"):
+        os.startfile(path)
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", path])
+    else:
+        subprocess.Popen(["xdg-open", path])
+
+
+class HistoryWindow(tk.Toplevel):
+    """처리 이력(logs/history.jsonl)을 표로 보여주는 창. 최신 기록이 맨 위."""
+
+    _instance = None
+
+    def __init__(self, master):
+        # 이미 열려 있으면 새로 만들지 않고 앞으로 가져와서 새로고침
+        if HistoryWindow._instance is not None and HistoryWindow._instance.winfo_exists():
+            HistoryWindow._instance.lift()
+            HistoryWindow._instance.refresh()
+            return
+        super().__init__(master)
+        HistoryWindow._instance = self
+        self.title("처리 이력")
+        self.geometry("860x420")
+        self.minsize(600, 300)
+        self.rows = {}
+
+        frame = ttk.Frame(self, padding=10)
+        frame.pack(fill="both", expand=True)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(1, weight=1)
+
+        bar = ttk.Frame(frame)
+        bar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        self.summary_var = tk.StringVar()
+        ttk.Label(bar, textvariable=self.summary_var).pack(side="left")
+        ttk.Button(bar, text="이력 파일 열기", command=self.open_file).pack(side="right")
+        ttk.Button(bar, text="새로고침", command=self.refresh).pack(side="right", padx=(0, 4))
+
+        cols = ("time", "file", "type", "status", "count", "detail")
+        self.table = ttk.Treeview(frame, columns=cols, show="headings", selectmode="browse")
+        for col, text, width, anchor, stretch in [
+            ("time", "처리 시간", 150, "center", False),
+            ("file", "파일", 200, "w", True),
+            ("type", "방식", 70, "center", False),
+            ("status", "결과", 60, "center", False),
+            ("count", "건수", 50, "center", False),
+            ("detail", "처리본 / 실패 이유", 280, "w", True),
+        ]:
+            self.table.heading(col, text=text)
+            self.table.column(col, width=width, anchor=anchor, stretch=stretch)
+        self.table.tag_configure("failed", foreground="#c0392b")
+        self.table.grid(row=1, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=self.table.yview)
+        scroll.grid(row=1, column=1, sticky="ns")
+        self.table.configure(yscrollcommand=scroll.set)
+        self.table.bind("<<TreeviewSelect>>", self.show_selected)
+        self.table.bind("<Double-1>", self.open_selected)
+
+        self.detail_var = tk.StringVar()
+        ttk.Label(frame, textvariable=self.detail_var, wraplength=820, justify="left").grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        self.refresh()
+
+    def _close(self):
+        HistoryWindow._instance = None
+        self.destroy()
+
+    def refresh(self):
+        self.table.delete(*self.table.get_children())
+        self.rows.clear()
+        self.detail_var.set("")
+        try:
+            history = adapters.load_history()
+        except Exception as e:
+            self.summary_var.set(f"이력을 읽을 수 없습니다: {type(e).__name__}: {e}")
+            return
+        if not history:
+            self.summary_var.set("아직 기록된 이력이 없습니다. 파일을 처리하면 여기에 쌓입니다.")
+            return
+
+        failed = 0
+        for i, h in enumerate(reversed(history)):      # 최신이 맨 위
+            ok = h.get("status") == "success"
+            failed += not ok
+            out = h.get("output_path")
+            detail = os.path.basename(out) if ok and out else ("-" if ok else (h.get("error_message") or ""))
+            iid = str(i)
+            self.rows[iid] = h
+            self.table.insert("", "end", iid=iid, tags=() if ok else ("failed",), values=(
+                (h.get("timestamp") or "").replace("T", " "),
+                h.get("original_filename", ""),
+                PROCESS_NAMES.get(h.get("processing_type"), h.get("processing_type", "")),
+                STATUS_NAMES.get(h.get("status"), h.get("status", "")),
+                h.get("detection_count", ""),
+                detail,
+            ))
+        msg = f"전체 {len(history)}건"
+        if failed:
+            msg += f" (실패 {failed}건)"
+        self.summary_var.set(msg + "  ·  처리본이 있는 줄을 더블클릭하면 파일이 열립니다.")
+
+    def show_selected(self, _event=None):
+        sel = self.table.selection()
+        if not sel:
+            return
+        h = self.rows[sel[0]]
+        if h.get("status") == "success":
+            self.detail_var.set(f"처리본: {h.get('output_path') or '없음 (점검만)'}")
         else:
-            subprocess.Popen(["xdg-open", path])
+            self.detail_var.set(f"실패 이유: {h.get('error_message') or '기록 없음'}")
+
+    def open_selected(self, _event=None):
+        sel = self.table.selection()
+        if not sel:
+            return
+        out = self.rows[sel[0]].get("output_path")
+        if out and os.path.exists(out):
+            open_path(out)
+        elif out:
+            messagebox.showinfo("처리 이력", "처리본 파일이 이동되었거나 삭제되었습니다.", parent=self)
+
+    def open_file(self):
+        path = adapters.history_file_path()
+        if os.path.exists(path):
+            open_path(path)
+        else:
+            messagebox.showinfo("처리 이력", "아직 이력 파일이 없습니다.", parent=self)
 
 
 def main():

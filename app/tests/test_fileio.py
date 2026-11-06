@@ -169,3 +169,64 @@ def test_batch_stops_on_module_error():
                 assert "ner_detector" in str(e)
     finally:
         pipeline.adapters.detect_ner = original
+
+
+def test_batch_records_history():
+    import json
+    with _Tmp() as d:
+        src = os.path.join(d, "in")
+        os.makedirs(src)
+        with open(os.path.join(src, "a.txt"), "w", encoding="utf-8") as f:
+            f.write("전화 010-1234-5678\n주민 990101-1234567\n")
+        with open(os.path.join(src, "bad.txt"), "wb") as f:
+            f.write(b"\x00\x01binary")
+        out = os.path.join(d, "out")
+
+        s = run_batch(src, out_dir=out)                    # 마스킹
+        assert s["history_errors"] == []
+        run_batch(src, out_dir=out, check_only=True)       # 점검만
+
+        log_path = os.path.join(d, "logs", "history.jsonl")   # 실행 위치 기준 logs/
+        with open(log_path, encoding="utf-8") as f:
+            raw = f.read()
+        rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
+        summary = [(r["original_filename"], r["processing_type"], r["status"], r["detection_count"],
+                    r["output_path"] is not None) for r in rows]
+        assert summary == [
+            ("a.txt", "masking", "success", 2, True),
+            ("bad.txt", "masking", "failed", 0, False),
+            ("a.txt", "check", "success", 2, False),
+            ("bad.txt", "check", "failed", 0, False),
+        ], summary
+        assert rows[1]["error_message"].startswith("ValueError")
+        # 이력 파일에 개인정보 원문이 남지 않아야 함
+        for raw_value in ["010-1234-5678", "990101-1234567", "1234567"]:
+            assert raw_value not in raw
+
+
+def test_history_failure_does_not_stop_processing():
+    original = pipeline.adapters.save_history
+    def broken(*a, **k):
+        raise OSError("디스크 가득 참")
+    pipeline.adapters.save_history = broken
+    try:
+        with _Tmp() as d:
+            with open(os.path.join(d, "a.txt"), "w", encoding="utf-8") as f:
+                f.write("010-1234-5678")
+            s = run_batch(d, out_dir=os.path.join(d, "out"))
+            assert len(s["results"]) == 1 and s["results"][0]["output_path"]
+            assert s["history_errors"] and "디스크 가득 참" in s["history_errors"][0]
+    finally:
+        pipeline.adapters.save_history = original
+
+
+def test_load_history_for_viewer():
+    import adapters
+    with _Tmp() as d:
+        assert adapters.load_history() == []
+        with open(os.path.join(d, "a.txt"), "w", encoding="utf-8") as f:
+            f.write("010-1234-5678")
+        run_batch(d, out_dir=os.path.join(d, "out"))
+        h = adapters.load_history()
+        assert len(h) == 1 and h[0]["status"] == "success" and h[0]["detection_count"] == 1
+        assert adapters.history_file_path().endswith(os.path.join("logs", "history.jsonl"))

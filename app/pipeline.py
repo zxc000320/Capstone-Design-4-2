@@ -2,7 +2,7 @@
 메인 파이프라인 (담당: 김진웅)
 
 처리 순서:
-    파일 읽기 → 정규식·NER 탐지 → (형식 검사) → 결과 합치기 → 마스킹 → 결과 파일 저장
+    파일 읽기 → 정규식·NER 탐지 → (형식 검사) → 결과 합치기 → 마스킹 → 결과 파일 저장 → 이력 기록
 
 팀원 모듈은 adapters.py를 통해 호출한다 (모듈 원본은 수정하지 않음).
 
@@ -36,7 +36,7 @@ ENTITY_KEYS = ("seg_id", "start", "end", "type", "text", "source")
 # 결과 기본 저장 위치: 어디서 실행하든 저장소 맨 위 폴더의 output
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_OUT = os.path.join(ROOT_DIR, "output")
-SKIP_DIRS = {"output", "history", "__pycache__", ".git", "venv", ".venv", "node_modules"}
+SKIP_DIRS = {"output", "history", "logs", "backups", "__pycache__", ".git", "venv", ".venv", "node_modules"}
 
 
 class ModuleOutputError(ValueError):
@@ -138,7 +138,7 @@ def run_pipeline(input_path, mode="mask", out_dir=DEFAULT_OUT, check_only=False)
     new_segments = validate_masked_segments(adapters.apply_masking(segments, entities), segments)
 
     # 5. 결과 파일 저장 (원본 덮어쓰기 금지)
-    # TODO: 점검·처리 이력 기록은 이력관리 모듈(김재민)이 들어오면 여기서 연결
+    # 이력 기록은 run_batch()에서 파일마다 성공·실패를 모두 남긴다
     output_path = None
     if not check_only:
         output_path = write_file(input_path, new_segments, doc, out_dir)
@@ -191,12 +191,21 @@ def run_batch(path, mode="mask", out_dir=DEFAULT_OUT, check_only=False, on_progr
 
     on_progress(i, n, file_path, result_or_None, error_or_None): 진행 상황 콜백 (GUI용)
     files: 처리할 파일 목록 (GUI에서 일부만 선택한 경우). 없으면 path 안의 지원 파일 전부
-    반환: {"results": [...], "errors": [(file_path, message), ...]}
+    반환: {"results": [...], "errors": [(file_path, message), ...], "history_errors": [...]}
+
+    파일마다 처리가 끝나면 이력(성공/실패)을 기록한다.
+    이력 기록이 실패해도 처리 자체는 계속하고, 그 내용은 history_errors로 돌려준다.
     """
     if files is None:
         files = collect_files(path, out_dir)
     base = path if os.path.isdir(path) else os.path.dirname(path)
-    results, errors = [], []
+    results, errors, history_errors = [], [], []
+
+    def log(input_path, output_path, count, status, error=None):
+        try:
+            adapters.save_history(input_path, output_path, count, check_only, status, error)
+        except Exception as e:
+            history_errors.append(f"{os.path.basename(input_path)}: {type(e).__name__}: {e}")
 
     for i, f in enumerate(files, 1):
         # 폴더 구조를 결과 폴더에도 그대로 유지
@@ -206,12 +215,15 @@ def run_batch(path, mode="mask", out_dir=DEFAULT_OUT, check_only=False, on_progr
             r = run_pipeline(f, mode=mode, out_dir=target_dir, check_only=check_only)
             results.append(r)
             err = None
-        except ModuleOutputError:
+            log(f, r["output_path"], r["total"], "success")
+        except ModuleOutputError as e:
+            log(f, None, 0, "failed", f"ModuleOutputError: {e}")
             raise  # 모듈 형식 오류는 모든 파일에서 똑같이 나므로 바로 중단
         except Exception as e:
             r, err = None, f"{type(e).__name__}: {e}"
             errors.append((f, err))
+            log(f, None, 0, "failed", err)
         if on_progress:
             on_progress(i, len(files), f, r, err)
 
-    return {"results": results, "errors": errors}
+    return {"results": results, "errors": errors, "history_errors": history_errors}

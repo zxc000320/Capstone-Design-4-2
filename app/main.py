@@ -72,6 +72,8 @@ def main(argv=None):
           f"개인정보 {sum(total.values())}건 ({describe_counts(total)})")
     if errors:
         print(f"실패: {len(errors)}개 (위 목록 참고)")
+    for h in summary.get("history_errors", []):
+        print(f"[경고] 이력 기록 실패 — {h}")
     return 1 if errors else 0
 
 
