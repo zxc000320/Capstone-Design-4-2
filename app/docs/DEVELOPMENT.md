@@ -38,13 +38,14 @@
 | `fileio/` | 파일 읽기·처리본 저장 |
 | `tests/` | 파이프라인·연결 코드·파일 입출력 테스트 |
 
-`regex_detector.py`(박주아), `masking.py`(최동명)는 **수정하지 않고 그대로 호출**합니다.
+`regex_detector.py`(박주아), `masking.py`(최동명), `backup_history/`(김재민)는 **수정하지 않고 그대로 호출**합니다.
 
 ## 처리 순서
 ```
-파일 읽기 → 정규식·NER 탐지 → 형식 검사 → 결과 병합 → 마스킹 → 처리본 저장
+파일 읽기 → 정규식·NER 탐지 → 형식 검사 → 결과 병합 → 마스킹 → 처리본 저장 → 이력 기록
 ```
-- NER 탐지, 점검·처리 이력 기록은 해당 모듈이 들어오면 `adapters.py` / `pipeline.py`에 연결 예정
+- 이력은 파일마다 성공·실패를 모두 기록 (`run_batch()`), 기록 실패 시에도 처리는 계속하고 경고 표시
+- NER 탐지는 모듈이 들어오면 `adapters.detect_ner()`에 연결 예정 (현재 빈 결과)
 
 ## 모듈 연결 (adapters.py)
 팀원 모듈의 현재 입출력을 파이프라인 공통 형식으로 바꿔줍니다. 모듈 형식이 바뀌면 이 파일만 고치면 됩니다.
@@ -53,6 +54,8 @@
 |---|---|---|
 | 정규식 탐지 | `detect_text(text)` | 문단·줄마다 호출, `value` → `text`, `seg_id`·`source` 추가 |
 | 마스킹 | `apply_masking(text, results)` | 문단·줄마다 호출, 모듈 형식(`value`, 모듈 타입 이름)으로 되돌려 전달 |
+| 이력 기록 | `record_history(...)` | 처리 방식 `mask`→`"masking"`, 점검만→`"check"`, 상태 `"success"`/`"failed"` |
+| 이력 조회 | `get_history()` | GUI [이력 보기] 창에서 그대로 사용 |
 
 타입 이름 변환: `BANK_ACCOUNT` ↔ `ACCOUNT`, `CARD_NUMBER` ↔ `CARD`
 
