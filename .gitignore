@@ -1,8 +1,8 @@
-   __pycache__/
-   *.pyc
-   output/
-   .venv/
-   venv/
-   history/
-   backups/
-   logs/
+__pycache__/
+*.pyc
+output/
+.venv/
+venv/
+history/
+backups/
+logs/
