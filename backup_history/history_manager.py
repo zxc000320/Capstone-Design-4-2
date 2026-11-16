@@ -1,4 +1,5 @@
 import json
+import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -39,9 +40,21 @@ def get_history():
 
     histories = []
 
-    with LOG_FILE.open("r", encoding="utf-8") as file:
-        for line in file:
-            if line.strip():
-                histories.append(json.loads(line))
+    with LOG_FILE.open("rb") as file:
+        for line_number, line in enumerate(file, 1):
+            if not line.strip():
+                continue
+            try:
+                history = json.loads(line.decode("utf-8"))
+                if not isinstance(history, dict):
+                    raise ValueError("History must be a JSON object")
+            except (UnicodeDecodeError, ValueError):
+                warnings.warn(
+                    f"Skipped invalid history record at line {line_number}.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                continue
+            histories.append(history)
 
     return histories
