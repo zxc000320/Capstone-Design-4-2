@@ -57,7 +57,16 @@
 | 이력 기록 | `record_history(...)` | 처리 방식 `mask`→`"masking"`, 점검만→`"check"`, 상태 `"success"`/`"failed"` |
 | 이력 조회 | `get_history()` | GUI [이력 보기] 창에서 그대로 사용 |
 
-타입 이름 변환: `BANK_ACCOUNT` ↔ `ACCOUNT`, `CARD_NUMBER` ↔ `CARD`
+타입 이름 변환 (모듈마다 이름이 달라서 따로 변환):
+
+| 파이프라인 | 정규식 탐지(박주아) | 마스킹(최동명) |
+|---|---|---|
+| `ACCOUNT` | `BANK_ACCOUNT` | `BANK_ACCOUNT` |
+| `CARD` | `CARD_NUMBER` | `CREDIT_CARD` |
+| `IP_ADDRESS` | `IP_ADDRESS` | `IP` |
+| 그 외 (`RRN`, `PHONE`, `EMAIL`, `NAME`, `ADDRESS`) | 같은 이름 | 같은 이름 |
+
+모듈 쪽 이름이 바뀌면 `adapters.py`의 `DETECTOR_TO_PIPELINE` / `PIPELINE_TO_MASKING`만 고치면 된다.
 
 ## 파이프라인 공통 형식
 **Segment** (파일 읽기 결과)

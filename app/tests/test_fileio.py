@@ -17,6 +17,14 @@ import pipeline
 from pipeline import run_pipeline, run_batch, validate_entities, ModuleOutputError
 
 
+def M(text):
+    """현재 탐지·마스킹 모듈이 이 문장을 어떻게 바꾸는지 (팀원 규칙이 바뀌어도 테스트가 따라감)"""
+    import adapters
+    segs = [{"seg_id": "x", "text": text, "meta": {}}]
+    ents = pipeline.merge_entities(adapters.detect_regex(segs), [])
+    return adapters.apply_masking(segs, ents)[0]["text"]
+
+
 class _Tmp:
     def __enter__(self):
         self.cwd = os.getcwd()
@@ -69,18 +77,19 @@ def test_docx_keeps_format_and_covers_all_parts():
 
         out = Document(r["output_path"])
         p = out.paragraphs[0]
-        assert p.text == "주민번호는 990101-1****** 입니다."
-        runs = [(x.text, bool(x.bold), bool(x.italic)) for x in p.runs]
-        assert runs == [("주민번호는 ", False, False), ("990101-", True, False),
-                        ("1******", False, True), (" 입니다.", True, False)], runs
+        assert p.text == M("주민번호는 990101-1234567 입니다.")
+        # 서식이 다른 4개 덩어리(보통·굵게·기울임·굵게)가 그대로 유지돼야 함
+        runs = [(bool(x.bold), bool(x.italic)) for x in p.runs]
+        assert runs == [(False, False), (True, False), (False, True), (True, False)], runs
+        assert p.runs[0].text == "주민번호는 " and p.runs[3].text == " 입니다."
 
         # 하이퍼링크: 글자는 가려지고 mailto 링크는 제거
-        assert out.paragraphs[1].text == "메일: " + "*" * len("hong@example.com")
+        assert out.paragraphs[1].text == M("메일: hong@example.com")
         assert not out.paragraphs[1].hyperlinks
 
-        assert out.tables[0].cell(0, 0).text == "연락처 *************"
-        assert out.tables[0].cell(1, 0).tables[0].cell(0, 0).text == "카드 *******************"
-        assert out.sections[0].header.paragraphs[0].text == "작성자 IP ************"
+        assert out.tables[0].cell(0, 0).text == M("연락처 010-1234-5678")
+        assert out.tables[0].cell(1, 0).tables[0].cell(0, 0).text == M("카드 1234-5678-9012-3456")
+        assert out.sections[0].header.paragraphs[0].text == M("작성자 IP 192.168.0.15")
         assert out.paragraphs[-1].text == "개인정보 없는 문단"
 
         # docx 내부 파일 전체(링크 주소 저장소 포함)에 원문이 남아 있지 않아야 함
@@ -99,7 +108,7 @@ def test_text_keeps_crlf_and_encoding():
         r = run_pipeline(src, out_dir=os.path.join(d, "out"))
         with open(r["output_path"], "rb") as f:
             raw = f.read()
-        assert raw == "사용자 990101-1****** 로그인\r\n정상 종료\r\n".encode("cp949"), raw
+        assert raw == (M("사용자 990101-1234567 로그인") + "\r\n정상 종료\r\n").encode("cp949"), raw
 
 
 def test_source_code_file():
@@ -109,7 +118,7 @@ def test_source_code_file():
             f.write('ADMIN_PHONE = "010-9876-5432"\nDEBUG = True\n')
         r = run_pipeline(src, out_dir=os.path.join(d, "out"))
         with open(r["output_path"], encoding="utf-8") as f:
-            assert f.read() == 'ADMIN_PHONE = "*************"\nDEBUG = True\n'
+            assert f.read() == M('ADMIN_PHONE = "010-9876-5432"') + "\nDEBUG = True\n"
 
 
 def test_check_only_writes_no_file():
@@ -119,7 +128,7 @@ def test_check_only_writes_no_file():
             f.write("없음\n전화 010-1234-5678\n")
         r = run_pipeline(src, out_dir=os.path.join(d, "out"), check_only=True)
         assert r["output_path"] is None and not os.path.exists(os.path.join(d, "out"))
-        assert r["findings"] == [{"location": "2행", "types": ["PHONE"], "preview": "전화 *************"}]
+        assert r["findings"] == [{"location": "2행", "types": ["PHONE"], "preview": M("전화 010-1234-5678")}]
 
 
 def test_batch_folder():

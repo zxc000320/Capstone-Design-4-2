@@ -28,12 +28,21 @@ import regex_detector  # noqa: E402
 import masking  # noqa: E402
 from backup_history.history_manager import record_history, get_history, LOG_FILE  # noqa: E402
 
-# 모듈 타입 이름 → 파이프라인 타입 이름
-TYPE_FROM_MODULE = {
+# 타입 이름은 모듈마다 다를 수 있으므로 모듈별로 따로 변환한다.
+# 파이프라인 공통 이름: RRN, PHONE, EMAIL, ACCOUNT, CARD, IP_ADDRESS, NAME, ADDRESS
+
+# 정규식 탐지(박주아)가 쓰는 이름 → 파이프라인 이름
+DETECTOR_TO_PIPELINE = {
     "BANK_ACCOUNT": "ACCOUNT",
     "CARD_NUMBER": "CARD",
 }
-TYPE_TO_MODULE = {v: k for k, v in TYPE_FROM_MODULE.items()}
+
+# 파이프라인 이름 → 마스킹(최동명) MASK_FUNCTIONS에 등록된 이름
+PIPELINE_TO_MASKING = {
+    "ACCOUNT": "BANK_ACCOUNT",
+    "CARD": "CREDIT_CARD",
+    "IP_ADDRESS": "IP",
+}
 
 
 def detect_regex(segments):
@@ -45,7 +54,7 @@ def detect_regex(segments):
                 "seg_id": seg["seg_id"],
                 "start": r["start"],
                 "end": r["end"],
-                "type": TYPE_FROM_MODULE.get(r["type"], r["type"]),
+                "type": DETECTOR_TO_PIPELINE.get(r["type"], r["type"]),
                 "text": r["value"],
                 "source": "regex",
             })
@@ -65,7 +74,7 @@ def apply_masking(segments, entities):
     by_seg = {}
     for e in entities:
         by_seg.setdefault(e["seg_id"], []).append({
-            "type": TYPE_TO_MODULE.get(e["type"], e["type"]),
+            "type": PIPELINE_TO_MASKING.get(e["type"], e["type"]),
             "value": e["text"],
             "start": e["start"],
             "end": e["end"],
