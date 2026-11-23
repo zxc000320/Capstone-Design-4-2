@@ -7,6 +7,8 @@
     regex_detector.detect_text(text) → [{"type", "value", "start", "end"}]   (박주아)
     masking.apply_masking(text, results) → str                              (최동명)
     backup_history.history_manager.record_history(...)                      (김재민)
+    pii.ner_engine.NerEngine.detect(text) → [pii.types.Entity]               (이나연)
+    pii.fusion (corroborate, propagate_document_level, resolve_overlaps, decide) (이나연)
 
 파이프라인 공통 형식 (Entity):
     {"seg_id", "start", "end", "type", "text", "source"}
@@ -61,9 +63,86 @@ def detect_regex(segments):
     return entities
 
 
-def detect_ner(segments):
-    """NER 탐지 (이나연) — 모듈이 아직 없어 빈 결과. 모듈이 들어오면 여기서 연결."""
-    return []
+# ---------------------------------------------------------------- NER (이나연)
+# 이나연님 판정 등급 중 마스킹할 등급. "자동처리"는 확실, "검토필요"는 사람 확인 권장.
+# 이 프로그램에는 사람이 확인하는 화면이 없으므로, 놓치는 것보다 더 가리는 쪽을 택해 둘 다 마스킹한다.
+NER_MASK_DECISIONS = ("자동처리", "검토필요")
+
+# 이나연님 EntityType 이름 → 파이프라인 이름
+NER_TO_PIPELINE = {
+    "PERSON": "NAME",
+    "ADDRESS": "ADDRESS",
+    "ORG": "ORG",
+    "BIRTH": "BIRTH",
+}
+
+# 파이프라인 정형 정보 → 이나연님 EntityType 이름 (주변 방증으로만 사용)
+PIPELINE_TO_NER_WITNESS = {
+    "RRN": "RRN", "PHONE": "PHONE", "EMAIL": "EMAIL",
+    "ACCOUNT": "ACCOUNT", "CARD": "CARD", "IP_ADDRESS": "IP",
+}
+
+_ner_engine = None
+
+
+def _get_ner_engine():
+    """NER 엔진은 한 번만 만든다. 사전·규칙 방식만 사용 (AI 모델은 별도 설치가 필요해 끔)."""
+    global _ner_engine
+    if _ner_engine is None:
+        from pii.ner_engine import build_engine
+        _ner_engine = build_engine(use_model=False)
+    return _ner_engine
+
+
+def detect_ner(segments, regex_entities=()):
+    """NER 탐지: 이나연님 엔진과 판정 규칙을 그대로 사용
+
+    1. 문단·줄마다 NerEngine.detect()로 이름·주소 등 후보를 찾는다.
+    2. 같은 문단의 정규식 탐지 결과를 '주변 방증'으로 넘겨 신뢰도를 보강한다 (corroborate).
+    3. 문서 전체에서 확정된 표현은 다른 위치에도 같은 판정을 적용한다 (propagate_document_level).
+    4. 문단마다 겹침을 정리하고 판정(decide)해서 NER_MASK_DECISIONS 등급만 넘긴다.
+    정규식 방증은 신뢰도 계산에만 쓰고, 정형 정보 자체는 정규식 결과(박주아)를 그대로 쓴다.
+    """
+    from pii.fusion import (FusionConfig, corroborate, decide,
+                            propagate_document_level, resolve_overlaps)
+    from pii.types import Entity as NerEntity, EntityType
+
+    engine = _get_ner_engine()
+    cfg = FusionConfig()
+
+    witnesses_by_seg = {}
+    for e in regex_entities:
+        name = PIPELINE_TO_NER_WITNESS.get(e["type"])
+        if name:
+            witnesses_by_seg.setdefault(e["seg_id"], []).append(NerEntity(
+                start=e["start"], end=e["end"], text=e["text"], etype=EntityType[name],
+                confidence=0.9, engines={"regex"}))
+
+    pools, ner_ids = {}, set()
+    for seg in segments:
+        found = engine.detect(seg["text"])
+        if not found:
+            continue
+        ner_ids.update(id(x) for x in found)
+        pools[seg["seg_id"]] = corroborate(witnesses_by_seg.get(seg["seg_id"], []) + found)
+
+    propagate_document_level([x for pool in pools.values() for x in pool])
+
+    entities = []
+    for seg_id, pool in pools.items():
+        for x in resolve_overlaps(pool):
+            if id(x) not in ner_ids or decide(x, cfg).value not in NER_MASK_DECISIONS:
+                continue
+            entities.append({
+                "seg_id": seg_id,
+                "start": x.start,
+                "end": x.end,
+                "type": NER_TO_PIPELINE.get(x.etype.name, x.etype.name),
+                "text": x.text,
+                "source": "ner",
+                "score": round(x.confidence, 3),
+            })
+    return entities
 
 
 def apply_masking(segments, entities):

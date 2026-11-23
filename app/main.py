@@ -16,6 +16,7 @@ from pipeline import run_batch, ModuleOutputError, DEFAULT_OUT
 TYPE_NAMES = {
     "RRN": "주민번호", "PHONE": "전화번호", "EMAIL": "이메일", "ACCOUNT": "계좌번호",
     "CARD": "카드번호", "IP_ADDRESS": "IP주소", "NAME": "이름", "ADDRESS": "주소",
+    "ORG": "소속기관", "BIRTH": "생년월일",
 }
 
 

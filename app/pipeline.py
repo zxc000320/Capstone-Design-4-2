@@ -128,7 +128,7 @@ def run_pipeline(input_path, mode="mask", out_dir=DEFAULT_OUT, check_only=False)
     # 2. 탐지 + 형식 검사
     regex_entities = adapters.detect_regex(segments)
     validate_entities(regex_entities, segments, "regex_detector")
-    ner_entities = adapters.detect_ner(segments)
+    ner_entities = adapters.detect_ner(segments, regex_entities)
     validate_entities(ner_entities, segments, "ner_detector")
 
     # 3. 결과 합치기

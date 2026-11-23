@@ -166,7 +166,7 @@ def test_validation_catches_bad_module():
 
 def test_batch_stops_on_module_error():
     original = pipeline.adapters.detect_ner
-    pipeline.adapters.detect_ner = lambda segs: [{"value": "x"}]
+    pipeline.adapters.detect_ner = lambda segs, *a: [{"value": "x"}]
     try:
         with _Tmp() as d:
             with open(os.path.join(d, "a.txt"), "w", encoding="utf-8") as f:

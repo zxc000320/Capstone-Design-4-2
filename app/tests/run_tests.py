@@ -86,6 +86,22 @@ def test_card_and_ip_use_masking_rules():
     assert out == expected, out
 
 
+def test_ner_connected_in_common_format():
+    """이나연님 NER 결과가 공통 형식(이름 변환 포함)으로 넘어오는지"""
+    segs = _seg("배송 주소: 서울특별시 가상구 테스트로 123")
+    ents = adapters.detect_ner(segs, adapters.detect_regex(segs))
+    validate_entities(ents, segs, "ner_detector")
+    assert [(e["type"], e["text"], e["source"]) for e in ents] == \
+        [("ADDRESS", "서울특별시 가상구 테스트로 123", "ner")], ents
+    assert all(0 <= e["score"] <= 1 for e in ents)
+
+
+def test_ner_types_have_masking_rule():
+    rules = set(adapters.masking.MASK_FUNCTIONS)
+    for t in ("NAME", "ADDRESS"):
+        assert adapters.PIPELINE_TO_MASKING.get(t, t) in rules, t
+
+
 def test_masked_output_hides_full_values():
     """규칙이 무엇이든 원래 번호가 통째로 남아 있으면 안 됨"""
     text = "주민 990101-1234567 전화 010-1234-5678 계좌 110-123-456789 메일 hong@example.com"
