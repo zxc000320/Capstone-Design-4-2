@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 from unittest.mock import patch
 
@@ -121,6 +122,94 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual(history["output_path"], str(output))
         self.assertEqual(history["detection_count"], 0)
         self.assertIsNone(history["error_message"])
+
+    def test_corrupt_lines_preserve_valid_records_and_file(self):
+        first = record_history("first.txt", None, 0, "check", "success")
+        with history_manager.LOG_FILE.open("ab") as f:
+            f.write(b'\n{"private": "SECRET"\n\xff\n[]\n')
+        second = record_history("second.txt", None, 1, "check", "success")
+        before = history_manager.LOG_FILE.read_bytes()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.assertEqual(get_history(), [first, second])
+        self.assertEqual(len(caught), 3)
+        self.assertTrue(all(w.category is RuntimeWarning for w in caught))
+        self.assertEqual([str(w.message) for w in caught], [
+            f"Skipped invalid history record at line {n}." for n in (3, 4, 5)
+        ])
+        self.assertNotIn("SECRET", str([w.message for w in caught]))
+        self.assertEqual(history_manager.LOG_FILE.read_bytes(), before)
+
+    def test_all_invalid_returns_empty_with_warning(self):
+        self.log_dir.mkdir()
+        history_manager.LOG_FILE.write_text('{"unfinished":', encoding="utf-8")
+        with self.assertWarns(RuntimeWarning):
+            self.assertEqual(get_history(), [])
+
+    def test_blank_lines_do_not_warn(self):
+        self.log_dir.mkdir()
+        history_manager.LOG_FILE.write_text("\n  \n", encoding="utf-8")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.assertEqual(get_history(), [])
+        self.assertEqual(caught, [])
+
+    def test_append_after_truncated_tail_preserves_new_record(self):
+        first = record_history("first.txt", None, 0, "check", "success")
+        with history_manager.LOG_FILE.open("ab") as f:
+            f.write(b'{"unfinished":')
+        before = history_manager.LOG_FILE.read_bytes()
+        second = record_history("second.txt", None, 1, "check", "success")
+        self.assertTrue(history_manager.LOG_FILE.read_bytes().startswith(before + b"\n"))
+        with self.assertWarns(RuntimeWarning):
+            self.assertEqual(get_history(), [first, second])
+
+    def test_append_after_valid_tail_without_newline(self):
+        first = record_history("first.txt", None, 0, "check", "success")
+        history_manager.LOG_FILE.write_bytes(history_manager.LOG_FILE.read_bytes().rstrip(b"\n"))
+        second = record_history("second.txt", None, 1, "check", "success")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.assertEqual(get_history(), [first, second])
+        self.assertEqual(caught, [])
+
+    def test_invalid_fields_are_skipped(self):
+        valid = record_history("valid.txt", None, 0, "check", "success")
+        invalid = [{}, {k: v for k, v in valid.items() if k != "output_path"}]
+        for key, value in (
+            ("timestamp", 123), ("original_filename", []),
+            ("output_path", 123), ("detection_count", True),
+            ("detection_count", -1), ("detection_count", "2"),
+            ("processing_type", []), ("processing_type", "unknown"),
+            ("status", {}), ("status", "unknown"), ("error_message", []),
+        ):
+            invalid.append({**valid, key: value})
+        for row in invalid:
+            with self.subTest(row=row):
+                history_manager.LOG_FILE.write_text(
+                    "\n".join(json.dumps(r) for r in (valid, row, valid)) + "\n",
+                    encoding="utf-8",
+                )
+                before = history_manager.LOG_FILE.read_bytes()
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    self.assertEqual(get_history(), [valid, valid])
+                self.assertEqual(len(caught), 1)
+                self.assertEqual(str(caught[0].message), "Skipped invalid history record at line 2.")
+                self.assertEqual(history_manager.LOG_FILE.read_bytes(), before)
+
+    def test_optional_error_and_extra_fields_remain_compatible(self):
+        row = record_history("valid.txt", None, 0, "check", "success")
+        row.pop("error_message")
+        row["extra"] = "future field"
+        history_manager.LOG_FILE.write_text(json.dumps(row) + "\n", encoding="utf-8")
+        self.assertEqual(get_history(), [row])
+
+    def test_io_errors_are_not_hidden(self):
+        with patch.object(Path, "open", side_effect=PermissionError("denied")):
+            with patch.object(Path, "exists", return_value=True):
+                with self.assertRaises(PermissionError):
+                    get_history()
 
 
 if __name__ == "__main__":
