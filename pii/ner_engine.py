@@ -51,6 +51,10 @@ NAME_STOPWORDS = {
     "관리", "운영", "개발", "설계", "분석", "평가", "보고", "작성", "제출", "수정",
     "전달", "처리", "공유", "완료", "예정", "관련", "참고", "문의", "발송", "회신",
     "통보", "접수", "반려", "취소", "연장", "적용", "해제", "생성", "삭제", "조회",
+    # 기관·금융 기관명에 자주 쓰여 이름으로 오인되는 어휘
+    "연락", "국민", "한글", "우리", "하나", "신한", "기업", "농협", "수협",
+    "새마을", "한국", "대한", "서울", "경기", "부산", "대구", "광주", "제주",
+    "고객센터", "상담", "안심", "보안", "정산", "청구", "납부", "가입", "해지",
 }
 
 SIDO = (
@@ -77,20 +81,84 @@ LABEL_CUES = (  # 앞쪽 라벨 → 강한 근거
     "보호자", "환자명", "고객명", "회원명", "대표자", "계약자", "예금주", "수취인",
     "학생명", "지원자", "면담자", "상담자", "연락처", "명의자",
 )
-HONORIFIC_CUES = ("님", "씨", "군", "양", "귀하")     # 뒤쪽 호칭 → 강한 근거
+#: 이름 어절에 바로 붙는 호칭. 붙어 있으면 이름임이 사실상 확정된다.
+HONORIFIC_SUFFIXES = ("귀하", "님", "씨", "군", "양")
+
+#: 이름 다음 어절 전체가 호칭인 경우 ("남궁민수 고객님", "김하늘 님께")
+HONORIFIC_WORDS = (
+    "님", "씨", "귀하", "고객님", "회원님", "환자분", "환자님", "선생님",
+    "교수님", "원장님", "대표님", "사장님", "팀장님", "부장님", "과장님",
+    "차장님", "주임님", "실장님", "의원님", "학부모님", "보호자님", "본인",
+)
+
+#: 이름 뒤에 붙을 수 있는 조사. 긴 것부터 맞춰본다.
+PARTICLES = (
+    "께서는", "에게서", "께서", "에게", "이가", "에서", "으로", "부터", "까지",
+    "은", "는", "이", "가", "을", "를", "의", "와", "과", "도", "께", "만",
+    "에", "로",
+)
 TITLE_CUES = (
     "교수", "박사", "선생", "강사", "원장", "대표", "사장", "부사장", "이사",
     "부장", "차장", "과장", "대리", "주임", "팀장", "실장", "본부장", "연구원",
     "학생", "조교", "간호사", "의사", "변호사", "회계사",
 )
-JOSA_CUES = ("은", "는", "이", "가", "을", "를", "에게", "께", "와", "과", "의", "도")
-
 _HANGUL = r"[가-힣]"
 
-#: 이름 칸 바로 앞에 붙은 식별 라벨 (구분기호/공백만 사이에 허용)
+#: 이름 칸 바로 앞에 붙은 식별 라벨. 라벨 뒤에 조사나 구분기호가 하나 오는
+#: 것까지만 허용한다("성명:", "예금주는"). 창을 넓게 잡으면 라벨이 엉뚱한
+#: 뒷 어절까지 끌어올려 "담당자 이영희님께 연락"의 '연락'을 이름으로 만든다.
 _RE_ADJACENT_LABEL = re.compile(
-    r"(?:" + "|".join(LABEL_CUES) + r")\s*[::\-|]?\s*$"
+    r"(?:" + "|".join(LABEL_CUES) + r")(?:은|는|이|가|의|을|를)?\s*[::\-|]?\s*$"
 )
+
+#: 한글 어절 하나
+_RE_HANGUL_RUN = re.compile(r"[가-힣]+")
+_SN1_SET = frozenset(SURNAMES_1)
+
+#: 어절에서 이름을 떼고 남은 꼬리의 종류. 선호 순위를 함께 둔다.
+_KIND_RANK = {"honorific": 3, "none": 2, "particle": 1}
+
+
+def _suffix_kind(suf: str) -> str | None:
+    """이름 뒤에 남은 꼬리를 분류한다. 해석할 수 없으면 None."""
+    if not suf:
+        return "none"
+    for h in HONORIFIC_SUFFIXES:
+        if suf == h:
+            return "honorific"
+        if suf.startswith(h) and suf[len(h):] in PARTICLES:
+            return "honorific"
+    if suf in PARTICLES:
+        return "particle"
+    return None
+
+
+def _parse_name(word: str) -> tuple[str, str, bool] | None:
+    """한글 어절을 (이름, 꼬리종류, 복성여부)로 분해한다.
+
+    이름 뒤에 호칭이나 조사가 붙어 있어도 이름만 떼어낸다. 단순 경계
+    검사만 하면 '이영희님께'처럼 호칭이 붙은 순간 이름을 통째로 놓친다.
+    """
+    cands: list[tuple[str, str, bool]] = []
+    for sn in SURNAMES_2:
+        if word.startswith(sn):
+            for glen in (2, 1):
+                if len(word) >= len(sn) + glen:
+                    name = word[:len(sn) + glen]
+                    kind = _suffix_kind(word[len(name):])
+                    if kind:
+                        cands.append((name, kind, True))
+    if word[0] in _SN1_SET:
+        for glen in (2, 1):
+            if len(word) >= 1 + glen:
+                name = word[:1 + glen]
+                kind = _suffix_kind(word[len(name):])
+                if kind:
+                    cands.append((name, kind, False))
+    if not cands:
+        return None
+    # 호칭이 붙은 해석 > 꼬리 없는 해석 > 조사만 붙은 해석, 복성 우선
+    return max(cands, key=lambda c: (_KIND_RANK[c[1]], c[2], len(c[0])))
 
 
 # ======================================================================
@@ -111,14 +179,11 @@ class LexiconNER:
     name = "ner_lexicon"
 
     def __init__(self) -> None:
-        sn1 = re.escape("".join(sorted(set(SURNAMES_1))))
-        sn2 = "|".join(SURNAMES_2)
-        self._re_person = re.compile(
-            rf"(?<!{_HANGUL})(?:(?:{sn2})|[{sn1}]){_HANGUL}{{1,2}}(?!{_HANGUL})"
-        )
         self._re_address = re.compile(
             r"(?:" + "|".join(sorted(SIDO, key=len, reverse=True)) + r")"
-            r"(?:\s*[가-힣]{1,10}(?:시|군|구))?"
+            # 시/군/구는 두 단계까지 이어진다('성남시 분당구'). 한 단계만
+            # 허용하면 주소가 중간에서 끊겨 '분당구'가 그대로 노출된다.
+            r"(?:\s*[가-힣]{1,10}(?:시|군|구)){0,2}"
             r"(?:\s*[가-힣]{1,10}(?:읍|면|동|리))?"
             r"(?:\s*[가-힣A-Za-z0-9]{1,15}(?:대로|로|길))?"
             r"(?:\s*\d{1,5}(?:-\d{1,5})?(?:번길\s*\d{1,5}(?:-\d{1,5})?)?)?"
@@ -143,61 +208,85 @@ class LexiconNER:
 
     # ------------------------------------------------------------------
     def detect(self, text: str) -> list[Entity]:
+        orgs = self._detect_org(text)
+        # 기관명 안쪽에 걸린 이름 후보는 버린다. 그대로 두면 유형 우선순위에서
+        # 성명이 소속기관을 이겨, 가리지 않아야 할 기관명이 가려진다.
+        persons = [p for p in self._detect_person(text)
+                   if not any(o.start <= p.start and p.end <= o.end for o in orgs)]
         out: list[Entity] = []
-        out += self._detect_person(text)
+        out += persons
         out += self._detect_address(text)
-        out += self._detect_org(text)
+        out += orgs
         out += self._detect_birth(text)
         return out
 
     # ------------------------------------------------------------------
     def _detect_person(self, text: str) -> list[Entity]:
+        """어절 단위로 이름을 찾는다.
+
+        점수는 '직접 근거'에서만 나온다. 호칭이 붙었는지, 바로 앞 칸이
+        식별 라벨인지, 직함이 붙었는지가 전부다. 근처에 전화번호가 있다는
+        사실만으로는 이름이 되지 않는다(은행명 '국민'이 계좌번호 옆에
+        있다고 사람이 되지는 않는다).
+        """
         result: list[Entity] = []
-        for m in self._re_person.finditer(text):
-            token = m.group(0)
-            if token in NAME_STOPWORDS or token[:2] in NAME_STOPWORDS:
+        for m in _RE_HANGUL_RUN.finditer(text):
+            word = m.group(0)
+            parsed = _parse_name(word)
+            if parsed is None:
+                continue
+            name, kind, compound = parsed
+            if name in NAME_STOPWORDS or name[:2] in NAME_STOPWORDS:
                 continue
 
-            conf, evidence = 0.38, ["사전:성씨 일치"]
-            raw_right = text[m.end():m.end() + 8]
-            # 창이 넓으면 앞 어절의 라벨이 엉뚱한 토큰까지 끌어올린다.
-            left = text[max(0, m.start() - 10):m.start()].rstrip()
-            right = raw_right.lstrip()
-            has_label = any(cue in left for cue in LABEL_CUES)
-            # 라벨이 구분기호만 사이에 두고 바로 앞에 붙은 경우
-            # (예: "성명: 박서준") 는 서식상 이름 칸이 확실하다.
+            start_i = m.start()
+            end_i = start_i + len(name)
+            conf, evidence = 0.40, ["사전:성씨 일치"]
+
+            raw_right = text[m.end():m.end() + 10]
+            left = text[max(0, start_i - 12):start_i].rstrip()
+            next_word = raw_right.strip().split(" ")[0] if raw_right.strip() else ""
             adjacent_label = bool(_RE_ADJACENT_LABEL.search(left))
 
-            # 뒤에 콜론이 붙으면 사람 이름이 아니라 양식의 필드 라벨일 확률이
-            # 압도적으로 높다(연락처:, 이메일:, 소속: 등). 오탐의 최대 원인.
-            if raw_right[:2].lstrip().startswith((":", "：")) and not has_label:
-                conf -= 0.32
+            # 어절에 호칭이 바로 붙음: '이영희님께', '김가상님'
+            if kind == "honorific":
+                conf += 0.48
+                evidence.append("문맥:호칭 결합")
+            # 다음 어절 전체가 호칭: '남궁민수 고객님', '김하늘 님께'
+            elif next_word and (
+                next_word in HONORIFIC_WORDS
+                or any(next_word.startswith(h) and
+                       _suffix_kind(next_word[len(h):]) is not None
+                       for h in HONORIFIC_WORDS)
+            ):
+                conf += 0.40
+                evidence.append("문맥:호칭 어절 후행")
+
+            if compound:
+                conf += 0.10          # 남궁·황보 등 복성은 일반명사와 겹치지 않음
+                evidence.append("사전:복성")
+
+            if any(next_word.startswith(t) for t in TITLE_CUES) or \
+               any(left.endswith(t) for t in TITLE_CUES):
+                conf += 0.25
+                evidence.append("문맥:직함 인접")
+
+            if len(name) == 2:
+                conf -= 0.06          # 2음절은 일반명사와 충돌하기 쉽다
+
+            # 뒤에 콜론이 붙으면 이름이 아니라 양식의 필드 이름이다.
+            if raw_right.lstrip()[:1] in (":", "：") and not adjacent_label:
+                conf -= 0.35
                 evidence.append("억제:필드 라벨 형태")
 
-            if has_label:
-                conf += 0.32
-                evidence.append("문맥:식별 라벨 인접")
-            if right[:1] in HONORIFIC_CUES or right[:2] in HONORIFIC_CUES:
-                conf += 0.26
-                evidence.append("문맥:호칭 후행")
-            if any(right.startswith(t) or left.endswith(t) for t in TITLE_CUES):
-                conf += 0.18
-                evidence.append("문맥:직함 인접")
-            if right[:2] in JOSA_CUES or right[:1] in JOSA_CUES:
-                conf += 0.06
-                evidence.append("문맥:조사 후행")
             if adjacent_label:
-                conf = max(conf, 0.88)
+                conf = max(conf, 0.90)
                 evidence.append("문맥:식별 라벨 직결")
-            if len(token) == 2:
-                conf -= 0.06  # 2음절은 일반명사 충돌 가능성이 높음
-            if token[-1] in ("를", "을", "은", "로", "와", "과", "의", "도"):
-                conf -= 0.14  # 조사가 어절 끝에 붙은 일반 어절일 가능성
-                evidence.append("억제:조사 결합 어절 추정")
 
             result.append(Entity(
-                start=m.start(), end=m.end(), text=token,
-                etype=EntityType.PERSON, confidence=min(conf, 0.95),
+                start=start_i, end=end_i, text=name,
+                etype=EntityType.PERSON,
+                confidence=max(min(conf, 0.95), 0.02),
                 engines={self.name}, evidence=evidence,
             ))
         return result
