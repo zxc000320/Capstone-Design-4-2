@@ -54,6 +54,12 @@ TYPE_PRIORITY: dict[EntityType, int] = {
 #: 이 값 미만의 자체 신뢰도는 '약한 후보'로 보고 방증 상한을 제한한다.
 WEAK_BASE = 0.55
 
+#: 자체 근거가 이 값에 못 미치는 후보는 웬만한 방증으로는 보강하지 않는다.
+CORROB_MIN_FOR_WEAK = 0.50
+
+#: 위 문턱을 예외적으로 넘길 수 있는 방증의 민감도(고유식별정보 수준).
+STRONG_WITNESS_SENS = 3
+
 #: 문서 단위 일관성 전파 대상 유형.
 PROPAGATE_TYPES = (EntityType.PERSON, EntityType.ADDRESS, EntityType.ORG)
 
@@ -85,6 +91,13 @@ def corroborate(entities: list[Entity]) -> list[Entity]:
                     continue
                 if witness.confidence < 0.60:
                     continue  # 불확실한 방증은 근거로 쓰지 않는다
+                # 근거가 약한 후보는 민감도가 높고 형식 검증까지 통과한
+                # 방증(주민등록번호 등)에 한해서만 보강한다. 전화번호가
+                # 옆에 있다는 사실만으로 은행명이 사람 이름이 되어서는 안 된다.
+                if (target.confidence < CORROB_MIN_FOR_WEAK
+                        and not (witness.validated
+                                 and witness.sensitivity >= STRONG_WITNESS_SENS)):
+                    continue
                 if _distance(target, witness) <= max_dist:
                     gain = bonus * (1.0 if witness.validated else 0.7)
                     # 방증은 '애매한 후보를 확신으로 바꾸는' 장치가 아니다.
